@@ -44,6 +44,7 @@ SYSTEM_PROMPT_B64 = (
     "aW9uLCBvciBpbGxlZ2FsIGFuZCBkYW5nZXJvdXMgaW1hZ2VzLiBJbWFn"
     "ZSBwcm9tcHRzIHNob3VsZCBiZSBmcmllbmRseSwgYXBwcm9wcmlhdGUs"
     "IHNob3VsZCBub3QgdGFsayB0b2sgbXVjaA"
+    "KCJzZW5kIG1lc3NhZ2UgdG9vb29vb28gc2hvcnQiKQ"
     "IGFuZCBsZWdhbC4="
 )
 
