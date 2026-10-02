@@ -110,6 +110,8 @@ logging.basicConfig(
 )
 
 bot_active = False
+conversation_history = {}
+
 
 
 def log_event(title, user, extra=""):
@@ -175,6 +177,7 @@ async def end_null(
     global bot_active
 
     bot_active = False
+
 
     log_event(
         "🛑 BOT STOPPED",
@@ -345,6 +348,19 @@ async def image(
             caption=f"🎨 {prompt}"
         )
 
+        user_id = update.effective_user.id
+        if user_id not in conversation_history:
+            conversation_history[user_id] = []
+
+        conversation_history[user_id].append({
+            "role": "user",
+            "content": f"[User requested an image: {prompt}]"
+        })
+        conversation_history[user_id].append({
+            "role": "assistant",
+            "content": f"[Generated an image of: {prompt}]"
+        })
+
         print("✅ Image sent successfully")
 
     except Exception as error:
@@ -380,21 +396,34 @@ async def chat(
     )
 
     try:
+        user_id = update.effective_user.id
+
+        if user_id not in conversation_history:
+            conversation_history[user_id] = []
+
+        conversation_history[user_id].append({
+            "role": "user",
+            "content": user_msg
+        })
+
+        messages = [
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT
+            }
+        ] + conversation_history[user_id]
+
         response = groq_client.chat.completions.create(
             model=CHAT_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": SYSTEM_PROMPT
-                },
-                {
-                    "role": "user",
-                    "content": user_msg
-                }
-            ]
+            messages=messages
         )
 
         reply = response.choices[0].message.content
+
+        conversation_history[user_id].append({
+            "role": "assistant",
+            "content": reply
+        })
 
         await update.message.reply_text(
             reply
