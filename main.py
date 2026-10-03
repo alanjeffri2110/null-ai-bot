@@ -1,12 +1,3 @@
-
-
-
-
-
-
-
-
-
 import logging
 import base64
 import io
@@ -299,9 +290,12 @@ async def image(
 
     try:
         safe_prompt = (
-            prompt
-            + ", safe and appropriate, "
-            + "non-explicit, fully clothed subjects"
+            prompt.strip()
+            + ", exact requested subject and scene only; "
+            + "do not add people, humans, faces, bodies, characters, "
+            + "or unrelated subjects unless explicitly requested by the user; "
+            + "do not add sexual or suggestive content; "
+            + "safe and appropriate, non-explicit"
         )
 
         encoded_prompt = urllib.parse.quote(
@@ -320,7 +314,11 @@ async def image(
         }
 
         params = {
-            "model": IMAGE_MODEL
+            "model": IMAGE_MODEL,
+            "negative_prompt": (
+                "unrequested people, humans, faces, bodies, characters, "
+                "nudity, sexual content, suggestive content, unrelated subjects"
+            )
         }
 
         response = requests.get(
