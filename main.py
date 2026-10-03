@@ -2,7 +2,6 @@ import logging
 import base64
 import io
 import urllib.parse
-import os
 from datetime import datetime
 
 import requests
@@ -18,9 +17,9 @@ from telegram.ext import (
 )
 
 
-TELEGRAM_TOKEN = os.environ.get("8520225669:AAERew_ylB8Mu55MJU2_zX7hNITKPQJeLp4", "")
-GROQ_API_KEY = os.environ.get("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", "")
-POLLINATIONS_API_KEY = os.environ.get("sk_hv35IevattTrTacC4Os8yR3jBfZMLfFt", "")
+TELEGRAM_TOKEN = "8520225669:AAERew_ylB8Mu55MJU2_zX7hNITKPQJeLp4"
+GROQ_API_KEY = "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"
+POLLINATIONS_API_KEY = "sk_hv35IevattTrTacC4Os8yR3jBfZMLfFt"
 
 CHAT_MODEL = "openai/gpt-oss-120b"
 IMAGE_MODEL = "flux"
@@ -291,12 +290,9 @@ async def image(
 
     try:
         safe_prompt = (
-            prompt.strip()
-            + ", exact requested subject and scene only; "
-            + "do not add people, humans, faces, bodies, characters, "
-            + "or unrelated subjects unless explicitly requested by the user; "
-            + "do not add sexual or suggestive content; "
-            + "safe and appropriate, non-explicit"
+            prompt
+            + ", safe and appropriate, "
+            + "non-explicit, fully clothed subjects"
         )
 
         encoded_prompt = urllib.parse.quote(
@@ -315,11 +311,7 @@ async def image(
         }
 
         params = {
-            "model": IMAGE_MODEL,
-            "negative_prompt": (
-                "unrequested people, humans, faces, bodies, characters, "
-                "nudity, sexual content, suggestive content, unrelated subjects"
-            )
+            "model": IMAGE_MODEL
         }
 
         response = requests.get(
@@ -379,128 +371,6 @@ async def image(
 
         await update.message.reply_text(
             "❌ Image generation failed.\n\n"
-            f"Reason: {error}"
-        )
-
-
-async def edit_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not bot_active:
-        return
-
-    message = update.effective_message
-    prompt = " ".join(context.args).strip()
-    photo = None
-
-    if message.photo:
-        photo = message.photo[-1]
-    elif message.reply_to_message and message.reply_to_message.photo:
-        photo = message.reply_to_message.photo[-1]
-
-    if photo is None:
-        await message.reply_text(
-            "🖼️ Send a photo with /edit <instruction>, or reply to a photo with /edit <instruction>."
-        )
-        return
-
-    if not prompt:
-        await message.reply_text(
-            "🖼️ Example: /edit change the background to a sunset"
-        )
-        return
-
-    if unsafe_image_prompt(prompt):
-        await message.reply_text(
-            "❌ I can't make that edit. Please use a safe, appropriate and non-explicit instruction."
-        )
-        return
-
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action="upload_photo"
-    )
-
-    try:
-        tg_file = await context.bot.get_file(photo.file_id)
-        image_response = requests.get(tg_file.file_path, timeout=60)
-        image_response.raise_for_status()
-
-        image_bytes = image_response.content
-
-        edit_prompt = (
-            prompt.strip()
-            + ". Edit only the supplied image as requested. Preserve the original subject, "
-            + "identity, composition and details unless the instruction asks to change them. "
-            + "Do not add people, humans, faces, bodies, characters, or unrelated subjects "
-            + "unless explicitly requested. Keep the result safe, appropriate and non-explicit."
-        )
-
-        url = "https://gen.pollinations.ai/v1/images/edits"
-        headers = {
-            "Authorization": f"Bearer {POLLINATIONS_API_KEY}"
-        }
-
-        files = {
-            "image": ("input.jpg", image_bytes, "image/jpeg")
-        }
-        data = {
-            "prompt": edit_prompt,
-            "model": IMAGE_MODEL
-        }
-
-        response = requests.post(
-            url,
-            headers=headers,
-            files=files,
-            data=data,
-            timeout=180
-        )
-
-        if response.status_code != 200:
-            raise Exception(
-                f"HTTP {response.status_code}: {response.text[:1000]}"
-            )
-
-        content_type = response.headers.get("content-type", "").lower()
-        if content_type.startswith("image/"):
-            output = response.content
-        else:
-            result = response.json()
-            output_url = (
-                result.get("url")
-                or result.get("image_url")
-                or result.get("data", [{}])[0].get("url")
-            )
-            if not output_url:
-                raise Exception("Edit API did not return an image.")
-            output_response = requests.get(output_url, timeout=120)
-            output_response.raise_for_status()
-            output = output_response.content
-
-        result_file = io.BytesIO(output)
-        result_file.name = "NULL_AI_edited.jpg"
-
-        await message.reply_photo(
-            photo=result_file,
-            caption=f"🖼️ Edited: {prompt}"
-        )
-
-        user_id = update.effective_user.id
-        conversation_history.setdefault(user_id, [])
-        conversation_history[user_id].append({
-            "role": "user",
-            "content": f"[User asked to edit an image: {prompt}]"
-        })
-        conversation_history[user_id].append({
-            "role": "assistant",
-            "content": f"[Edited the supplied image: {prompt}]"
-        })
-
-        print("✅ Image edit sent successfully")
-
-    except Exception as error:
-        print("❌ Image edit error:", error)
-        await message.reply_text(
-            "❌ Image editing failed.\n\n"
             f"Reason: {error}"
         )
 
@@ -642,13 +512,6 @@ def main():
         CommandHandler(
             "image",
             image
-        )
-    )
-
-    app.add_handler(
-        CommandHandler(
-            "edit",
-            edit_image
         )
     )
 
