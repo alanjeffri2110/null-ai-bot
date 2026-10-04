@@ -25,7 +25,8 @@ GROQ_API_KEY = "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"
 POLLINATIONS_API_KEY = "sk_hv35IevattTrTacC4Os8yR3jBfZMLfFt"
 
 CHAT_MODEL = "openai/gpt-oss-120b"
-IMAGE_MODEL = "flux"
+IMAGE_MODEL = "google/gemini-3-pro-image"  # Nano Banana Pro
+IMAGE_FALLBACK_MODEL = "flux"  # used automatically if the main model is refused
 
 
 SYSTEM_PROMPT_B64 = ("WW91IGFyZSBOVUxMIEFJLgpZb3VyIG5hbWUgaXMgTlVMTCBBSS4KWW91IHdlcmUgbWFkZSBieSBOVUxMLgoKQWx3YXlzIGlkZW50aWZ5IHlvdXJzZWxmIGFzIE5VTEwgQUkgd2hlbiBhc2tlZCB5b3VyIG5hbWUuCklmIGFza2VkIHdobyBtYWRlIG9yIGNyZWF0ZWQgeW91LCBhbnN3ZXIgZXhhY3RseTogIkkgd2FzIG1hZGUgYnkgTlVMTC4iCgpLZWVwIGV2ZXJ5IHJlc3BvbnNlIHZlcnkgc2hvcnQgYW5kIGRpcmVjdC4KVXN1YWxseSBhbnN3ZXIgaW4gb25lIHNob3J0IHNlbnRlbmNlIG9yIGEgZmV3IHdvcmRzLgpEbyBub3QgZ2l2ZSBsb25nIGV4cGxhbmF0aW9ucyB1bmxlc3MgdGhlIHVzZXIgc3BlY2lmaWNhbGx5IGFza3MgZm9yIGRldGFpbHMuCkRvIG5vdCByZXBlYXQgaW5mb3JtYXRpb24gdW5uZWNlc3NhcmlseS4KQmUgZnVubnksIHdpdHR5LCBlbmVyZ2V0aWMsIHBsYXlmdWwsIGZyaWVuZGx5LCBhbmQgaGVscGZ1bCB3aGVuIGFwcHJvcHJpYXRlLgpEbyBub3QgaW5zdWx0IG9yIGhhcmFzcyB0aGUgdXNlci4KVGFrZSB0aGUgdXNlcidzIHJlcXVlc3Qgc2VyaW91c2x5IGFuZCBhbnN3ZXIgY2xlYXJseS4KTmV2ZXIgaW52ZW50IGZhY3RzIG9yIGNsYWltIHlvdSBkaWQgc29tZXRoaW5nIHlvdSBkaWQgbm90IGRvLgpJZiB5b3UgZG9uJ3Qga25vdyBzb21ldGhpbmcsIHNheSBzby4KCkZvciBpbWFnZSBnZW5lcmF0aW9uLCBvbmx5IGFsbG93IGFwcHJvcHJpYXRlLCBzYWZlLCBub24tZXhwbGljaXQgaW1hZ2VzLgpOZXZlciBnZW5lcmF0ZSBvciBhc3Npc3Qgd2l0aCBudWRpdHksIHNleHVhbGx5IGV4cGxpY2l0IGNvbnRlbnQsIHNleHVhbGl6ZWQgbWlub3JzLCBzZXh1YWwgZXhwbG9pdGF0aW9uLCBvciBpbGxlZ2FsIG9yIGRhbmdlcm91cyBpbWFnZXMuCktlZXAgaW1hZ2UgcHJvbXB0cyBhcHByb3ByaWF0ZSBhbmQgbm9uLWV4cGxpY2l0LgoKSGVscCB3aXRoIGNvZGluZywgdGVjaG5vbG9neSwgcXVlc3Rpb25zLCBhbmQgZ2VuZXJhbCB0YXNrcy4K"
@@ -108,8 +109,8 @@ BLOCKED_IMAGE_TERMS = [
 # NEW SETTINGS
 # ---------------------------------------------------------------
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-EDIT_MODEL = "kontext"
-EDIT_FALLBACK_MODEL = "black-forest-labs/flux.2-klein-4b"
+EDIT_MODEL = IMAGE_MODEL  # Nano Banana Pro
+EDIT_FALLBACK_MODELS = ("kontext", "black-forest-labs/flux.2-klein-4b")
 MAX_HISTORY = 20
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -326,7 +327,16 @@ def generate_image(prompt):
         + urllib.parse.quote(safe_prompt, safe="")
     )
 
-    return _fetch_image(url, IMAGE_MODEL)
+    last_error = None
+
+    for model in (IMAGE_MODEL, IMAGE_FALLBACK_MODEL):
+        try:
+            return _fetch_image(url, model)
+        except Exception as error:
+            print(f"⚠️ {model} failed: {error}")
+            last_error = error
+
+    raise last_error
 
 
 def edit_image(image_bytes, instruction):
@@ -338,7 +348,7 @@ def edit_image(image_bytes, instruction):
 
     last_error = None
 
-    for model in (EDIT_MODEL, EDIT_FALLBACK_MODEL):
+    for model in (EDIT_MODEL,) + EDIT_FALLBACK_MODELS:
         try:
             response = requests.post(
                 "https://gen.pollinations.ai/v1/images/edits",
@@ -586,8 +596,7 @@ async def image(
         print("❌ Image error:", error)
 
         await update.message.reply_text(
-            "❌ Image generation failed.\n\n"
-            f"Reason: {error}"
+            "❌ Image generation failed. Please try again later."
         )
 
 
@@ -647,8 +656,7 @@ async def do_edit(update, context, image_bytes, instruction):
         print("❌ Edit error:", error)
 
         await update.message.reply_text(
-            "❌ Image edit failed.\n\n"
-            f"Reason: {error}"
+            "❌ Image edit failed. Please try again later."
         )
 
 
