@@ -109,11 +109,10 @@ BLOCKED_IMAGE_TERMS = [
 # ---------------------------------------------------------------
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 EDIT_MODEL = "kontext"
-EDIT_FALLBACK_MODEL = "klein"
+EDIT_FALLBACK_MODEL = "black-forest-labs/flux.2-klein-4b"
 MAX_HISTORY = 20
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MEMORY_FILE = os.path.join(BASE_DIR, "null_memory.json")
 STATE_FILE = os.path.join(BASE_DIR, "null_state.json")
 
 EDIT_HINTS = (
@@ -154,7 +153,8 @@ def _save(path, data):
     os.replace(tmp, path)
 
 
-memory = _load(MEMORY_FILE, {})
+# per-user memory lives in RAM only: restarting the bot clears it
+memory = {}
 
 
 def get_history(user_id):
@@ -165,7 +165,6 @@ def add_history(user_id, role, content):
     history = get_history(user_id)
     history.append({"role": role, "content": content})
     del history[:-MAX_HISTORY]
-    _save(MEMORY_FILE, memory)
 
 
 def read_state():
@@ -317,47 +316,49 @@ def generate_image(prompt):
     return _fetch_image(url, IMAGE_MODEL)
 
 
-def upload_temp(image_bytes):
-    """Temporary public link (1 hour) so the edit model can fetch the image."""
-    response = requests.post(
-        "https://litterbox.catbox.moe/resources/internals/api.php",
-        data={"reqtype": "fileupload", "time": "1h"},
-        files={
-            "fileToUpload": (
-                "image.jpg", image_bytes, "image/jpeg"
-            )
-        },
-        timeout=60
-    )
-
-    link = response.text.strip()
-
-    if response.status_code != 200 or not link.startswith("http"):
-        raise Exception(
-            f"Image upload failed: {response.text[:200]}"
-        )
-
-    return link
-
-
 def edit_image(image_bytes, instruction):
-    image_url = upload_temp(image_bytes)
-
+    """Edit via Pollinations /v1/images/edits (direct upload, no 3rd-party host)."""
     safe_prompt = (
-        instruction[:500]
+        instruction[:2000]
         + ", safe and appropriate, non-explicit"
-    )
-
-    url = (
-        "https://gen.pollinations.ai/image/"
-        + urllib.parse.quote(safe_prompt, safe="")
     )
 
     last_error = None
 
     for model in (EDIT_MODEL, EDIT_FALLBACK_MODEL):
         try:
-            return _fetch_image(url, model, image_url)
+            response = requests.post(
+                "https://gen.pollinations.ai/v1/images/edits",
+                headers={
+                    "Authorization": f"Bearer {POLLINATIONS_API_KEY}"
+                },
+                data={
+                    "prompt": safe_prompt,
+                    "model": model,
+                    "response_format": "b64_json"
+                },
+                files={
+                    "image": ("image.jpg", image_bytes, "image/jpeg")
+                },
+                timeout=180
+            )
+
+            if response.status_code != 200:
+                raise Exception(
+                    f"HTTP {response.status_code}: "
+                    f"{response.text[:300]}"
+                )
+
+            item = response.json()["data"][0]
+
+            if item.get("b64_json"):
+                return base64.b64decode(item["b64_json"])
+
+            if item.get("url"):
+                return requests.get(item["url"], timeout=120).content
+
+            raise Exception("API did not return an image.")
+
         except Exception as error:
             last_error = error
 
@@ -466,7 +467,6 @@ async def start_null(
         "🎨 /image <prompt>\n"
         "🖌️ Send a photo + caption to edit it, "
         "or /edit <instruction>\n"
-        "🧹 /clearmemory\n"
         "🔐 /vip1 - /vip5"
     )
 
@@ -491,22 +491,6 @@ async def end_null(
         text = "🛑 NULL AI is now INACTIVE for this group."
 
     await update.message.reply_text(text)
-
-
-async def clear_memory(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    if not is_active(update.effective_chat.id):
-        return
-
-    memory[str(update.effective_user.id)] = []
-    _save(MEMORY_FILE, memory)
-    last_image.pop(update.effective_user.id, None)
-
-    await update.message.reply_text(
-        "🧹 Your memory has been cleared."
-    )
 
 
 def make_vip(message):
@@ -858,7 +842,6 @@ def main():
 
     app.add_handler(CommandHandler("startnull", start_null))
     app.add_handler(CommandHandler("endnull", end_null))
-    app.add_handler(CommandHandler("clearmemory", clear_memory))
 
     for number, text in enumerate(
         [VIP1_MESSAGE, VIP2_MESSAGE, VIP3_MESSAGE,
