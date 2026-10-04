@@ -157,6 +157,19 @@ def _save(path, data):
 memory = {}
 
 
+def mem_key(update):
+    """Memory is separate per chat AND per user (group memory != private memory)."""
+    return f"{update.effective_chat.id}:{update.effective_user.id}"
+
+
+def clear_chat_memory(chat_id):
+    prefix = f"{chat_id}:"
+
+    for store in (memory, last_image):
+        for key in [k for k in store if str(k).startswith(prefix)]:
+            del store[key]
+
+
 def get_history(user_id):
     return memory.setdefault(str(user_id), [])
 
@@ -478,6 +491,7 @@ async def end_null(
     chat = update.effective_chat
 
     set_active(chat.id, False)
+    clear_chat_memory(chat.id)
 
     log_event(
         "🛑 BOT STOPPED",
@@ -554,7 +568,7 @@ async def image(
             caption=f"🎨 {prompt}"
         )
 
-        user_id = update.effective_user.id
+        user_id = mem_key(update)
         last_image[user_id] = data
 
         add_history(
@@ -616,14 +630,14 @@ async def do_edit(update, context, image_bytes, instruction):
             caption=f"🖌️ {instruction}"
         )
 
-        last_image[user.id] = result
+        last_image[mem_key(update)] = result
 
         add_history(
-            user.id, "user",
+            mem_key(update), "user",
             f"[User sent an image and asked to edit it: {instruction}]"
         )
         add_history(
-            user.id, "assistant",
+            mem_key(update), "assistant",
             f"[Edited the image: {instruction}]"
         )
 
@@ -657,16 +671,16 @@ async def do_ask(update, context, image_bytes, question):
 
         reply = await asyncio.to_thread(
             vision_answer,
-            list(get_history(user.id)),
+            list(get_history(mem_key(update))),
             question,
             raw
         )
 
         add_history(
-            user.id, "user",
+            mem_key(update), "user",
             f"[User sent an image] {question}"
         )
-        add_history(user.id, "assistant", reply)
+        add_history(mem_key(update), "assistant", reply)
 
         await update.message.reply_text(reply[:4000])
 
@@ -683,7 +697,7 @@ async def do_ask(update, context, image_bytes, question):
 async def image_flow(update, context, image_bytes, text):
     """Photo + optional text: decide between editing and answering."""
     user = update.effective_user
-    last_image[user.id] = image_bytes
+    last_image[mem_key(update)] = image_bytes
 
     if not text:
         await do_ask(
@@ -720,7 +734,7 @@ async def edit_cmd(
     )
 
     if image_bytes is None:
-        image_bytes = last_image.get(update.effective_user.id)
+        image_bytes = last_image.get(mem_key(update))
 
     if image_bytes is None:
         await update.message.reply_text(
@@ -800,7 +814,7 @@ async def chat(
     )
 
     try:
-        user_id = update.effective_user.id
+        user_id = mem_key(update)
 
         add_history(user_id, "user", user_msg)
 
