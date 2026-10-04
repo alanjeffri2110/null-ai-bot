@@ -4,7 +4,9 @@ import io
 import json
 import logging
 import os
+import threading
 import urllib.parse
+from collections import deque
 from datetime import datetime
 
 import requests
@@ -129,11 +131,21 @@ groq_client = Groq(
 )
 
 logging.basicConfig(
-    level=logging.INFO
+    level=logging.WARNING
 )
+
+# stop the constant "HTTP Request: POST https://api.telegram.org/..." lines
+for noisy in ("httpx", "httpcore", "telegram", "apscheduler", "urllib3"):
+    logging.getLogger(noisy).setLevel(logging.ERROR)
 
 # last image each user sent / received (RAM only, used by /edit)
 last_image = {}
+
+# chats where the admin has taken over (AI is muted there)
+takeover = set()
+
+_state_lock = threading.Lock()
+_data_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------
@@ -193,6 +205,9 @@ def is_globally_stopped():
 
 
 def is_active(chat_id):
+    if chat_id in takeover:
+        return False
+
     state = read_state()
     if state["global_stop"]:
         return False
@@ -200,9 +215,17 @@ def is_active(chat_id):
 
 
 def set_active(chat_id, value):
-    state = read_state()
-    state["chats"][str(chat_id)] = value
-    _save(STATE_FILE, state)
+    with _state_lock:
+        state = read_state()
+        state["chats"][str(chat_id)] = value
+        _save(STATE_FILE, state)
+
+
+def set_global_stop(value):
+    with _state_lock:
+        state = read_state()
+        state["global_stop"] = value
+        _save(STATE_FILE, state)
 
 
 # ---------------------------------------------------------------
@@ -503,10 +526,15 @@ async def end_null(
     set_active(chat.id, False)
     clear_chat_memory(chat.id)
 
+    still_on = [
+        c for c, on in read_state()["chats"].items() if on
+    ]
+
     log_event(
-        "🛑 BOT STOPPED",
+        "🛑 BOT STOPPED (this chat only)",
         update.effective_user,
-        f"Chat: {chat.type} ({chat.id})"
+        f"Chat: {chat.type} ({chat.id})\n"
+        f"Still active in chats: {still_on}"
     )
 
     if chat.type == "private":
@@ -845,12 +873,297 @@ async def chat(
         )
 
 
+# ---------------------------------------------------------------
+# ADMIN MONITORING (controlled from the program console, not Telegram)
+# ---------------------------------------------------------------
+USERS_FILE = os.path.join(BASE_DIR, "null_users.json")
+
+registry = _load(USERS_FILE, {})
+registry.setdefault("users", {})
+registry.setdefault("chats", {})
+
+# recent activity (RAM only, cleared on restart)
+events = deque(maxlen=300)
+
+
+def record_usage(user, chat, kind, preview):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    name = user.full_name or user.first_name or "Unknown"
+
+    with _data_lock:
+        u = registry["users"].setdefault(str(user.id), {
+            "first_seen": now, "count": 0, "chats": []
+        })
+        u["name"] = name
+        u["username"] = user.username or ""
+        u["last_seen"] = now
+        u["count"] += 1
+
+        if chat.id not in u["chats"]:
+            u["chats"].append(chat.id)
+
+        c = registry["chats"].setdefault(str(chat.id), {
+            "first_seen": now
+        })
+        c["type"] = chat.type
+        c["title"] = chat.title or name
+        c["last_seen"] = now
+
+        _save(USERS_FILE, registry)
+
+        events.append({
+            "time": now,
+            "name": name,
+            "user_id": user.id,
+            "chat_id": chat.id,
+            "kind": kind,
+            "preview": (preview or "")[:80]
+        })
+
+
+async def tracker(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    """Runs before every other handler: records who used the bot."""
+    msg = update.message
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if not msg or not user or not chat:
+        return
+
+    if msg.text:
+        kind = "command" if msg.text.startswith("/") else "text"
+        preview = msg.text
+    elif msg.photo or (
+        msg.document
+        and (msg.document.mime_type or "").startswith("image/")
+    ):
+        kind = "photo"
+        preview = msg.caption or ""
+    else:
+        kind = "other"
+        preview = ""
+
+    record_usage(user, chat, kind, preview)
+
+    if chat.id in takeover:
+        who = user.full_name or user.first_name or "Unknown"
+        label = preview if kind != "photo" else f"[photo] {preview}"
+        print(f"\n📩 [{chat.id}] {who}: {label}")
+
+
+def send_to_chat(chat_id, text):
+    """Send a message as the bot (blocking, safe to call from the console thread)."""
+    for i in range(0, len(text), 4000):
+        try:
+            response = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                data={"chat_id": chat_id, "text": text[i:i + 4000]},
+                timeout=30
+            )
+
+            if response.status_code != 200:
+                print("❌ Send failed:", response.text[:200])
+                return False
+        except Exception as error:
+            print("❌ Send failed:", error)
+            return False
+
+    return True
+
+
+ADMIN_HELP = """
+================ ADMIN CONSOLE ================
+ status            overall state
+ off               turn the AI OFF for everyone
+ on                allow the AI again (chats still need /startnull)
+ users             everyone who used the bot
+ chats             all chats + AI state
+ log [n]           last n events (default 20)
+ say <chat> <text> send one message as the bot
+ talk <chat>       chat live as the bot (AI muted there)
+                   type /back to give the chat back to the AI
+ hold <chat>       mute the AI in a chat (read-only)
+ release <chat>    give the chat back to the AI
+ help              show this list
+================================================
+"""
+
+
+def _chat_state(chat_id):
+    if chat_id in takeover:
+        return "HUMAN"
+
+    state = read_state()
+
+    if state["global_stop"]:
+        return "OFF (admin)"
+
+    return "ON" if state["chats"].get(str(chat_id)) else "OFF"
+
+
+def _to_chat_id(text):
+    try:
+        return int(text)
+    except ValueError:
+        print("❌ Chat id must be a number (see 'chats').")
+        return None
+
+
+def admin_console():
+    talking = None
+
+    print(ADMIN_HELP)
+
+    while True:
+        prompt = f"talk[{talking}]> " if talking is not None else "admin> "
+
+        try:
+            line = input(prompt).strip()
+        except EOFError:
+            print("⚠️ Admin console unavailable (no keyboard input).")
+            return
+        except Exception:
+            return
+
+        # live chat mode
+        if talking is not None:
+            if line == "/back":
+                takeover.discard(talking)
+                print(f"✅ AI resumed in chat {talking}")
+                talking = None
+            elif line:
+                send_to_chat(talking, line)
+            continue
+
+        if not line:
+            continue
+
+        cmd, _, rest = line.partition(" ")
+        cmd = cmd.lower()
+        rest = rest.strip()
+
+        if cmd == "help":
+            print(ADMIN_HELP)
+
+        elif cmd == "status":
+            state = read_state()
+            on_chats = [c for c, v in state["chats"].items() if v]
+            print("Global:", "OFF (admin)" if state["global_stop"] else "ON")
+            print("Chats with AI on:", len(on_chats))
+            print("Human-controlled chats:", sorted(takeover))
+            print("Users seen:", len(registry["users"]))
+
+        elif cmd == "off":
+            set_global_stop(True)
+            print("🛑 AI is OFF for everyone.")
+
+        elif cmd == "on":
+            set_global_stop(False)
+            print("✅ AI allowed again (each chat keeps its own on/off).")
+
+        elif cmd == "users":
+            with _data_lock:
+                rows = sorted(
+                    registry["users"].items(),
+                    key=lambda kv: kv[1].get("last_seen", ""),
+                    reverse=True
+                )
+
+            if not rows:
+                print("No users yet.")
+
+            for uid, u in rows:
+                handle = f"@{u['username']}" if u.get("username") else "-"
+                print(
+                    f"{uid} | {u.get('name')} | {handle} | "
+                    f"msgs: {u.get('count')} | "
+                    f"last: {u.get('last_seen')}"
+                )
+
+        elif cmd == "chats":
+            with _data_lock:
+                rows = sorted(
+                    registry["chats"].items(),
+                    key=lambda kv: kv[1].get("last_seen", ""),
+                    reverse=True
+                )
+
+            if not rows:
+                print("No chats yet.")
+
+            for cid, c in rows:
+                print(
+                    f"{cid} | {c.get('type')} | {c.get('title')} | "
+                    f"AI: {_chat_state(int(cid))} | "
+                    f"last: {c.get('last_seen')}"
+                )
+
+        elif cmd == "log":
+            try:
+                n = int(rest) if rest else 20
+            except ValueError:
+                n = 20
+
+            recent = list(events)[-n:]
+
+            if not recent:
+                print("No activity since the bot started.")
+
+            for e in recent:
+                print(
+                    f"{e['time']} | {e['name']} ({e['user_id']}) | "
+                    f"chat {e['chat_id']} | {e['kind']} | {e['preview']}"
+                )
+
+        elif cmd == "say":
+            chat_part, _, text = rest.partition(" ")
+            chat_id = _to_chat_id(chat_part)
+
+            if chat_id is not None and text.strip():
+                if send_to_chat(chat_id, text.strip()):
+                    print("✅ Sent.")
+            elif chat_id is not None:
+                print("Usage: say <chat> <text>")
+
+        elif cmd == "talk":
+            chat_id = _to_chat_id(rest)
+
+            if chat_id is not None:
+                takeover.add(chat_id)
+                talking = chat_id
+                print(
+                    f"💬 You are now the bot in chat {chat_id}. "
+                    f"Their messages will show up here. /back to leave."
+                )
+
+        elif cmd == "hold":
+            chat_id = _to_chat_id(rest)
+
+            if chat_id is not None:
+                takeover.add(chat_id)
+                print(f"⏸️ AI muted in chat {chat_id}.")
+
+        elif cmd == "release":
+            chat_id = _to_chat_id(rest)
+
+            if chat_id is not None:
+                takeover.discard(chat_id)
+                print(f"✅ AI resumed in chat {chat_id}.")
+
+        else:
+            print("Unknown command. Type 'help'.")
+
+
 def main():
 
     print()
     print("=" * 60)
     print("🤖 NULL AI BOT")
     print("=" * 60)
+    print("Version: per-chat stop + per-chat memory")
     print("Starting...")
     print("=" * 60)
     print()
@@ -861,6 +1174,8 @@ def main():
         .token(TELEGRAM_TOKEN)
         .build()
     )
+
+    app.add_handler(MessageHandler(filters.ALL, tracker), group=-1)
 
     app.add_handler(CommandHandler("startnull", start_null))
     app.add_handler(CommandHandler("endnull", end_null))
@@ -890,6 +1205,8 @@ def main():
             chat
         )
     )
+
+    threading.Thread(target=admin_console, daemon=True).start()
 
     print("✅ Bot is running...")
     print("Use /startnull to activate.")
