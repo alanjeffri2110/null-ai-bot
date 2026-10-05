@@ -25,10 +25,17 @@ from telegram.ext import (
 
 TELEGRAM_TOKEN = "8520225669:AAERew_ylB8Mu55MJU2_zX7hNITKPQJeLp4"
 GROQ_API_KEY = "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"
-POLLINATIONS_API_KEY = "sk_hv35IevattTrTacC4Os8yR3jBfZMLfFt"
+POLLINATIONS_API_KEY = "sk_dCykHdjdw1h7g0TdebHk3LY69lSqXEHi"
 
 CHAT_MODEL = "openai/gpt-oss-120b"
-IMAGE_MODEL = "nanobanana"  # the ONLY image model used (use "nanobanana-pro" for the Pro version)
+# Only the Nano Banana models your Pollinations key allows, tried in this order.
+# If one fails (no balance, down, ...) the next one is used. Remove any you don't want.
+IMAGE_MODELS = (
+    "nanobanana-pro",      # Nano Banana Pro
+    "nanobanana-2",        # Nano Banana 2
+    "nanobanana-2-lite",   # Nano Banana 2 Lite
+    "nanobanana",          # Nano Banana
+)
 
 
 SYSTEM_PROMPT_B64 = ("WW91IGFyZSBOVUxMIEFJLgpZb3VyIG5hbWUgaXMgTlVMTCBBSS4KWW91IHdlcmUgbWFkZSBieSBOVUxMLgoKQWx3YXlzIGlkZW50aWZ5IHlvdXJzZWxmIGFzIE5VTEwgQUkgd2hlbiBhc2tlZCB5b3VyIG5hbWUuCklmIGFza2VkIHdobyBtYWRlIG9yIGNyZWF0ZWQgeW91LCBhbnN3ZXIgZXhhY3RseTogIkkgd2FzIG1hZGUgYnkgTlVMTC4iCgpLZWVwIGV2ZXJ5IHJlc3BvbnNlIHZlcnkgc2hvcnQgYW5kIGRpcmVjdC4KVXN1YWxseSBhbnN3ZXIgaW4gb25lIHNob3J0IHNlbnRlbmNlIG9yIGEgZmV3IHdvcmRzLgpEbyBub3QgZ2l2ZSBsb25nIGV4cGxhbmF0aW9ucyB1bmxlc3MgdGhlIHVzZXIgc3BlY2lmaWNhbGx5IGFza3MgZm9yIGRldGFpbHMuCkRvIG5vdCByZXBlYXQgaW5mb3JtYXRpb24gdW5uZWNlc3NhcmlseS4KQmUgZnVubnksIHdpdHR5LCBlbmVyZ2V0aWMsIHBsYXlmdWwsIGZyaWVuZGx5LCBhbmQgaGVscGZ1bCB3aGVuIGFwcHJvcHJpYXRlLgpEbyBub3QgaW5zdWx0IG9yIGhhcmFzcyB0aGUgdXNlci4KVGFrZSB0aGUgdXNlcidzIHJlcXVlc3Qgc2VyaW91c2x5IGFuZCBhbnN3ZXIgY2xlYXJseS4KTmV2ZXIgaW52ZW50IGZhY3RzIG9yIGNsYWltIHlvdSBkaWQgc29tZXRoaW5nIHlvdSBkaWQgbm90IGRvLgpJZiB5b3UgZG9uJ3Qga25vdyBzb21ldGhpbmcsIHNheSBzby4KCkZvciBpbWFnZSBnZW5lcmF0aW9uLCBvbmx5IGFsbG93IGFwcHJvcHJpYXRlLCBzYWZlLCBub24tZXhwbGljaXQgaW1hZ2VzLgpOZXZlciBnZW5lcmF0ZSBvciBhc3Npc3Qgd2l0aCBudWRpdHksIHNleHVhbGx5IGV4cGxpY2l0IGNvbnRlbnQsIHNleHVhbGl6ZWQgbWlub3JzLCBzZXh1YWwgZXhwbG9pdGF0aW9uLCBvciBpbGxlZ2FsIG9yIGRhbmdlcm91cyBpbWFnZXMuCktlZXAgaW1hZ2UgcHJvbXB0cyBhcHByb3ByaWF0ZSBhbmQgbm9uLWV4cGxpY2l0LgoKSGVscCB3aXRoIGNvZGluZywgdGVjaG5vbG9neSwgcXVlc3Rpb25zLCBhbmQgZ2VuZXJhbCB0YXNrcy4K"
@@ -111,7 +118,6 @@ BLOCKED_IMAGE_TERMS = [
 # NEW SETTINGS
 # ---------------------------------------------------------------
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-EDIT_MODEL = IMAGE_MODEL
 MAX_HISTORY = 20
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -356,7 +362,7 @@ def generate_image(prompt):
 
     last_error = None
 
-    for model in (IMAGE_MODEL,):
+    for model in IMAGE_MODELS:
         try:
             return _fetch_image(url, model)
         except Exception as error:
@@ -375,7 +381,7 @@ def edit_image(image_bytes, instruction):
 
     last_error = None
 
-    for model in (EDIT_MODEL,):
+    for model in IMAGE_MODELS:
         try:
             response = requests.post(
                 "https://gen.pollinations.ai/v1/images/edits",
@@ -410,6 +416,7 @@ def edit_image(image_bytes, instruction):
             raise Exception("API did not return an image.")
 
         except Exception as error:
+            print(f"⚠️ edit with {model} failed: {error}")
             last_error = error
 
     raise last_error
@@ -1066,7 +1073,7 @@ def admin_console():
         elif cmd == "test":
             print("Testing your Pollinations key (small test images)...")
 
-            for model in (IMAGE_MODEL,):
+            for model in IMAGE_MODELS:
                 try:
                     r = requests.get(
                         "https://gen.pollinations.ai/image/a%20red%20apple",
