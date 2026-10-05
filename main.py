@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import re
 import threading
 import urllib.parse
 from collections import deque
@@ -27,7 +28,7 @@ GROQ_API_KEY = "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"
 POLLINATIONS_API_KEY = "sk_hv35IevattTrTacC4Os8yR3jBfZMLfFt"
 
 CHAT_MODEL = "openai/gpt-oss-120b"
-IMAGE_MODEL = "google/gemini-3-pro-image"  # Nano Banana Pro
+IMAGE_MODEL = "nanobanana-pro"  # Nano Banana Pro
 IMAGE_FALLBACK_MODEL = "flux"  # used automatically if the main model is refused
 
 
@@ -112,7 +113,7 @@ BLOCKED_IMAGE_TERMS = [
 # ---------------------------------------------------------------
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 EDIT_MODEL = IMAGE_MODEL  # Nano Banana Pro
-EDIT_FALLBACK_MODELS = ("kontext", "black-forest-labs/flux.2-klein-4b")
+EDIT_FALLBACK_MODELS = ("kontext", "klein")
 MAX_HISTORY = 20
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -264,6 +265,11 @@ def unsafe_image_prompt(prompt):
             return True
 
     return False
+
+
+def error_code(error):
+    found = re.search(r"HTTP (\d{3})", str(error))
+    return f"\n(code: {found.group(1)})" if found else ""
 
 
 def prepare_image(data):
@@ -625,6 +631,7 @@ async def image(
 
         await update.message.reply_text(
             "❌ Image generation failed. Please try again later."
+            + error_code(error)
         )
 
 
@@ -685,6 +692,7 @@ async def do_edit(update, context, image_bytes, instruction):
 
         await update.message.reply_text(
             "❌ Image edit failed. Please try again later."
+            + error_code(error)
         )
 
 
