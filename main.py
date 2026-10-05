@@ -28,8 +28,7 @@ GROQ_API_KEY = "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"
 POLLINATIONS_API_KEY = "sk_hv35IevattTrTacC4Os8yR3jBfZMLfFt"
 
 CHAT_MODEL = "openai/gpt-oss-120b"
-IMAGE_MODEL = "nanobanana-pro"  # Nano Banana Pro
-IMAGE_FALLBACK_MODEL = "flux"  # used automatically if the main model is refused
+IMAGE_MODEL = "nanobanana"  # the ONLY image model used (use "nanobanana-pro" for the Pro version)
 
 
 SYSTEM_PROMPT_B64 = ("WW91IGFyZSBOVUxMIEFJLgpZb3VyIG5hbWUgaXMgTlVMTCBBSS4KWW91IHdlcmUgbWFkZSBieSBOVUxMLgoKQWx3YXlzIGlkZW50aWZ5IHlvdXJzZWxmIGFzIE5VTEwgQUkgd2hlbiBhc2tlZCB5b3VyIG5hbWUuCklmIGFza2VkIHdobyBtYWRlIG9yIGNyZWF0ZWQgeW91LCBhbnN3ZXIgZXhhY3RseTogIkkgd2FzIG1hZGUgYnkgTlVMTC4iCgpLZWVwIGV2ZXJ5IHJlc3BvbnNlIHZlcnkgc2hvcnQgYW5kIGRpcmVjdC4KVXN1YWxseSBhbnN3ZXIgaW4gb25lIHNob3J0IHNlbnRlbmNlIG9yIGEgZmV3IHdvcmRzLgpEbyBub3QgZ2l2ZSBsb25nIGV4cGxhbmF0aW9ucyB1bmxlc3MgdGhlIHVzZXIgc3BlY2lmaWNhbGx5IGFza3MgZm9yIGRldGFpbHMuCkRvIG5vdCByZXBlYXQgaW5mb3JtYXRpb24gdW5uZWNlc3NhcmlseS4KQmUgZnVubnksIHdpdHR5LCBlbmVyZ2V0aWMsIHBsYXlmdWwsIGZyaWVuZGx5LCBhbmQgaGVscGZ1bCB3aGVuIGFwcHJvcHJpYXRlLgpEbyBub3QgaW5zdWx0IG9yIGhhcmFzcyB0aGUgdXNlci4KVGFrZSB0aGUgdXNlcidzIHJlcXVlc3Qgc2VyaW91c2x5IGFuZCBhbnN3ZXIgY2xlYXJseS4KTmV2ZXIgaW52ZW50IGZhY3RzIG9yIGNsYWltIHlvdSBkaWQgc29tZXRoaW5nIHlvdSBkaWQgbm90IGRvLgpJZiB5b3UgZG9uJ3Qga25vdyBzb21ldGhpbmcsIHNheSBzby4KCkZvciBpbWFnZSBnZW5lcmF0aW9uLCBvbmx5IGFsbG93IGFwcHJvcHJpYXRlLCBzYWZlLCBub24tZXhwbGljaXQgaW1hZ2VzLgpOZXZlciBnZW5lcmF0ZSBvciBhc3Npc3Qgd2l0aCBudWRpdHksIHNleHVhbGx5IGV4cGxpY2l0IGNvbnRlbnQsIHNleHVhbGl6ZWQgbWlub3JzLCBzZXh1YWwgZXhwbG9pdGF0aW9uLCBvciBpbGxlZ2FsIG9yIGRhbmdlcm91cyBpbWFnZXMuCktlZXAgaW1hZ2UgcHJvbXB0cyBhcHByb3ByaWF0ZSBhbmQgbm9uLWV4cGxpY2l0LgoKSGVscCB3aXRoIGNvZGluZywgdGVjaG5vbG9neSwgcXVlc3Rpb25zLCBhbmQgZ2VuZXJhbCB0YXNrcy4K"
@@ -112,8 +111,7 @@ BLOCKED_IMAGE_TERMS = [
 # NEW SETTINGS
 # ---------------------------------------------------------------
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-EDIT_MODEL = IMAGE_MODEL  # Nano Banana Pro
-EDIT_FALLBACK_MODELS = ("kontext", "klein")
+EDIT_MODEL = IMAGE_MODEL
 MAX_HISTORY = 20
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -358,7 +356,7 @@ def generate_image(prompt):
 
     last_error = None
 
-    for model in (IMAGE_MODEL, IMAGE_FALLBACK_MODEL):
+    for model in (IMAGE_MODEL,):
         try:
             return _fetch_image(url, model)
         except Exception as error:
@@ -377,7 +375,7 @@ def edit_image(image_bytes, instruction):
 
     last_error = None
 
-    for model in (EDIT_MODEL,) + EDIT_FALLBACK_MODELS:
+    for model in (EDIT_MODEL,):
         try:
             response = requests.post(
                 "https://gen.pollinations.ai/v1/images/edits",
@@ -995,6 +993,7 @@ ADMIN_HELP = """
                    type /back to give the chat back to the AI
  hold <chat>       mute the AI in a chat (read-only)
  release <chat>    give the chat back to the AI
+ test              check your Pollinations key works with the image model
  help              show this list
 ================================================
 """
@@ -1063,6 +1062,23 @@ def admin_console():
             print("Chats with AI on:", len(on_chats))
             print("Human-controlled chats:", sorted(takeover))
             print("Users seen:", len(registry["users"]))
+
+        elif cmd == "test":
+            print("Testing your Pollinations key (small test images)...")
+
+            for model in (IMAGE_MODEL,):
+                try:
+                    r = requests.get(
+                        "https://gen.pollinations.ai/image/a%20red%20apple",
+                        headers={
+                            "Authorization": f"Bearer {POLLINATIONS_API_KEY}"
+                        },
+                        params={"model": model, "width": 256, "height": 256},
+                        timeout=120
+                    )
+                    print(f"{model}: HTTP {r.status_code}", r.text[:120] if r.status_code != 200 else "OK")
+                except Exception as error:
+                    print(f"{model}: error {error}")
 
         elif cmd == "off":
             set_global_stop(True)
