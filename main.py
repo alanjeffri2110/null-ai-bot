@@ -29,10 +29,11 @@ GROQ_API_KEY = "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"
 POLLINATIONS_API_KEY = "sk_dCykHdjdw1h7g0TdebHk3LY69lSqXEHi"
 
 CHAT_MODEL = "openai/gpt-oss-120b"
-# Models used for images (tried in this order). Tick the same models in your
-# Pollinations key permissions. Change the names here if you pick different ones.
-IMAGE_MODELS = ("flux",)      # making new images
-EDIT_MODELS = ("kontext", "black-forest-labs/flux.1-kontext-pro")    # editing pictures (short name, then full name)
+# Free image generation + editing: Cloudflare Workers AI (free plan, no card).
+# Get these two values from your free Cloudflare account (see the steps I sent).
+CF_ACCOUNT_ID = ""  # leave empty to auto-detect from the token, or paste your Account ID
+CF_API_TOKEN = "cfut_64r9cEopWLms8QQh6dVpZQyfbKG4eaB6XNKeU2Mwa3725d04"
+CF_MODEL = "@cf/black-forest-labs/flux-2-klein-4b"  # makes AND edits images
 
 
 SYSTEM_PROMPT_B64 = ("WW91IGFyZSBOVUxMIEFJLgpZb3VyIG5hbWUgaXMgTlVMTCBBSS4KWW91IHdlcmUgbWFkZSBieSBOVUxMLgoKQWx3YXlzIGlkZW50aWZ5IHlvdXJzZWxmIGFzIE5VTEwgQUkgd2hlbiBhc2tlZCB5b3VyIG5hbWUuCklmIGFza2VkIHdobyBtYWRlIG9yIGNyZWF0ZWQgeW91LCBhbnN3ZXIgZXhhY3RseTogIkkgd2FzIG1hZGUgYnkgTlVMTC4iCgpLZWVwIGV2ZXJ5IHJlc3BvbnNlIHZlcnkgc2hvcnQgYW5kIGRpcmVjdC4KVXN1YWxseSBhbnN3ZXIgaW4gb25lIHNob3J0IHNlbnRlbmNlIG9yIGEgZmV3IHdvcmRzLgpEbyBub3QgZ2l2ZSBsb25nIGV4cGxhbmF0aW9ucyB1bmxlc3MgdGhlIHVzZXIgc3BlY2lmaWNhbGx5IGFza3MgZm9yIGRldGFpbHMuCkRvIG5vdCByZXBlYXQgaW5mb3JtYXRpb24gdW5uZWNlc3NhcmlseS4KQmUgZnVubnksIHdpdHR5LCBlbmVyZ2V0aWMsIHBsYXlmdWwsIGZyaWVuZGx5LCBhbmQgaGVscGZ1bCB3aGVuIGFwcHJvcHJpYXRlLgpEbyBub3QgaW5zdWx0IG9yIGhhcmFzcyB0aGUgdXNlci4KVGFrZSB0aGUgdXNlcidzIHJlcXVlc3Qgc2VyaW91c2x5IGFuZCBhbnN3ZXIgY2xlYXJseS4KTmV2ZXIgaW52ZW50IGZhY3RzIG9yIGNsYWltIHlvdSBkaWQgc29tZXRoaW5nIHlvdSBkaWQgbm90IGRvLgpJZiB5b3UgZG9uJ3Qga25vdyBzb21ldGhpbmcsIHNheSBzby4KCkZvciBpbWFnZSBnZW5lcmF0aW9uLCBvbmx5IGFsbG93IGFwcHJvcHJpYXRlLCBzYWZlLCBub24tZXhwbGljaXQgaW1hZ2VzLgpOZXZlciBnZW5lcmF0ZSBvciBhc3Npc3Qgd2l0aCBudWRpdHksIHNleHVhbGx5IGV4cGxpY2l0IGNvbnRlbnQsIHNleHVhbGl6ZWQgbWlub3JzLCBzZXh1YWwgZXhwbG9pdGF0aW9uLCBvciBpbGxlZ2FsIG9yIGRhbmdlcm91cyBpbWFnZXMuCktlZXAgaW1hZ2UgcHJvbXB0cyBhcHByb3ByaWF0ZSBhbmQgbm9uLWV4cGxpY2l0LgoKSGVscCB3aXRoIGNvZGluZywgdGVjaG5vbG9neSwgcXVlc3Rpb25zLCBhbmQgZ2VuZXJhbCB0YXNrcy4K"
@@ -312,10 +313,11 @@ async def get_image_from_message(msg, context):
 # ---------------------------------------------------------------
 # IMAGE / VISION BACKENDS (blocking, run via asyncio.to_thread)
 # ---------------------------------------------------------------
-def _fetch_image(url, model, image_url=None):
-    headers = {
-        "Authorization": f"Bearer {POLLINATIONS_API_KEY}"
-    }
+def _fetch_image(url, model, image_url=None, use_key=True):
+    headers = {}
+
+    if use_key:
+        headers["Authorization"] = f"Bearer {POLLINATIONS_API_KEY}"
 
     params = {"model": model}
 
@@ -345,73 +347,139 @@ def _fetch_image(url, model, image_url=None):
     return response.content
 
 
-def generate_image(prompt):
-    # no extra words added: the old "fully clothed subjects" text made the
-    # model invent random people. Unsafe prompts are blocked before this point.
-    safe_prompt = prompt
+def cf_ready():
+    return bool(CF_API_TOKEN) and not CF_API_TOKEN.startswith("PASTE")
 
-    url = (
-        "https://gen.pollinations.ai/image/"
-        + urllib.parse.quote(safe_prompt, safe="")
+
+def cf_account_id():
+    """Use CF_ACCOUNT_ID if set, otherwise ask Cloudflare which account the token belongs to."""
+    global CF_ACCOUNT_ID
+
+    if CF_ACCOUNT_ID and not CF_ACCOUNT_ID.startswith("PASTE"):
+        return CF_ACCOUNT_ID
+
+    response = requests.get(
+        "https://api.cloudflare.com/client/v4/accounts",
+        headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
+        timeout=30
     )
 
+    accounts = []
+
+    if response.status_code == 200:
+        accounts = response.json().get("result", [])
+
+    if not accounts:
+        raise Exception(
+            "Could not detect your Cloudflare Account ID "
+            f"(HTTP {response.status_code}). Paste it into CF_ACCOUNT_ID."
+        )
+
+    CF_ACCOUNT_ID = accounts[0]["id"]
+    print("✅ Cloudflare Account ID detected.")
+    return CF_ACCOUNT_ID
+
+
+def cf_run(prompt, width=1024, height=1024, image_bytes=None):
+    """Cloudflare Workers AI FLUX.2 klein: text->image, or edit when image_bytes is given."""
+    if not cf_ready():
+        raise Exception(
+            "Cloudflare is not set up: fill CF_API_TOKEN"
+        )
+
+    fields = {
+        "prompt": (None, prompt),
+        "width": (None, str(width)),
+        "height": (None, str(height)),
+    }
+
+    if image_bytes is not None:
+        fields["input_image_0"] = ("image.jpg", image_bytes, "image/jpeg")
+
+    response = requests.post(
+        f"https://api.cloudflare.com/client/v4/accounts/{cf_account_id()}"
+        f"/ai/run/{CF_MODEL}",
+        headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
+        files=fields,
+        timeout=180
+    )
+
+    if response.status_code != 200:
+        raise Exception(
+            f"HTTP {response.status_code}: {response.text[:300]}"
+        )
+
+    if response.headers.get("content-type", "").lower().startswith("image/"):
+        return response.content
+
+    data = response.json()
+    result = data.get("result", data)
+    b64 = result.get("image") if isinstance(result, dict) else None
+
+    if not b64:
+        raise Exception("Cloudflare did not return an image.")
+
+    return base64.b64decode(b64)
+
+
+def shrink_for_edit(image_bytes):
+    """Input picture max 512px (Cloudflare limit); output keeps the same shape."""
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        w, h = img.size
+        scale = 1024 / max(w, h)
+
+        def fit(value):
+            return max(256, min(1920, int(round(value * scale / 16) * 16)))
+
+        out_w, out_h = fit(w), fit(h)
+
+        img.thumbnail((512, 512))
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=90)
+        return buf.getvalue(), out_w, out_h
+    except Exception:
+        return image_bytes, 1024, 1024
+
+
+def generate_image(prompt):
+    # No extra words are added to your prompt. Unsafe prompts are blocked earlier.
     last_error = None
 
-    for model in IMAGE_MODELS:
+    try:
+        return cf_run(prompt)
+    except Exception as error:
+        print(f"⚠️ Cloudflare generation failed: {error}")
+        last_error = error
+
+    # backup: Pollinations free no-key access (may be slow or unavailable)
+    quoted = urllib.parse.quote(prompt, safe="")
+
+    for base in (
+        "https://gen.pollinations.ai/image/",
+        "https://image.pollinations.ai/prompt/"
+    ):
         try:
-            return _fetch_image(url, model)
+            return _fetch_image(base + quoted, "flux", use_key=False)
         except Exception as error:
-            print(f"⚠️ {model} failed: {error}")
-            last_error = error
+            print(f"⚠️ free no-key access ({base}) failed: {error}")
 
     raise last_error
 
 
 def edit_image(image_bytes, instruction):
-    """Edit via Pollinations /v1/images/edits (direct upload, no 3rd-party host)."""
-    safe_prompt = instruction[:2000]
+    small, out_w, out_h = shrink_for_edit(image_bytes)
 
-    last_error = None
-
-    for model in EDIT_MODELS:
-        try:
-            response = requests.post(
-                "https://gen.pollinations.ai/v1/images/edits",
-                headers={
-                    "Authorization": f"Bearer {POLLINATIONS_API_KEY}"
-                },
-                data={
-                    "prompt": safe_prompt,
-                    "model": model,
-                    "response_format": "b64_json"
-                },
-                files={
-                    "image": ("image.jpg", image_bytes, "image/jpeg")
-                },
-                timeout=180
-            )
-
-            if response.status_code != 200:
-                raise Exception(
-                    f"HTTP {response.status_code}: "
-                    f"{response.text[:300]}"
-                )
-
-            item = response.json()["data"][0]
-
-            if item.get("b64_json"):
-                return base64.b64decode(item["b64_json"])
-
-            if item.get("url"):
-                return requests.get(item["url"], timeout=120).content
-
-            raise Exception("API did not return an image.")
-
-        except Exception as error:
-            print(f"⚠️ edit with {model} failed: {error}")
-            last_error = error
-
-    raise last_error
+    try:
+        return cf_run(
+            f"Edit input_image_0: {instruction[:1500]}",
+            out_w, out_h, small
+        )
+    except Exception as error:
+        print(f"⚠️ Cloudflare edit failed: {error}")
+        raise
 
 
 def vision_answer(history, question, image_bytes):
@@ -959,6 +1027,25 @@ async def tracker(
         print(f"\n📩 [{chat.id}] {who}: {label}")
 
 
+def tiny_png():
+    import struct
+    import zlib
+
+    w = h = 64
+    raw = b"".join(b"\x00" + b"\xff\x00\x00" * w for _ in range(h))
+
+    def chunk(kind, data):
+        body = struct.pack(">I", len(data)) + kind + data
+        return body + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
 def send_to_chat(chat_id, text):
     """Send a message as the bot (blocking, safe to call from the console thread)."""
     for i in range(0, len(text), 4000):
@@ -992,7 +1079,7 @@ ADMIN_HELP = """
                    type /back to give the chat back to the AI
  hold <chat>       mute the AI in a chat (read-only)
  release <chat>    give the chat back to the AI
- test              check your Pollinations key works with the image model
+ test              check free image generation + editing (Cloudflare)
  models            list the models your Pollinations key is allowed to use
  help              show this list
 ================================================
@@ -1064,21 +1151,34 @@ def admin_console():
             print("Users seen:", len(registry["users"]))
 
         elif cmd == "test":
-            print("Testing your Pollinations key (small test images)...")
+            try:
+                v = requests.get(
+                    "https://api.cloudflare.com/client/v4/user/tokens/verify",
+                    headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
+                    timeout=30
+                )
+                print("token check:", v.status_code, v.text[:200])
+            except Exception as error:
+                print("token check: FAILED", error)
 
-            for model in dict.fromkeys(IMAGE_MODELS + EDIT_MODELS):
-                try:
-                    r = requests.get(
-                        "https://gen.pollinations.ai/image/a%20red%20apple",
-                        headers={
-                            "Authorization": f"Bearer {POLLINATIONS_API_KEY}"
-                        },
-                        params={"model": model, "width": 256, "height": 256},
-                        timeout=120
-                    )
-                    print(f"{model}: HTTP {r.status_code}", r.text[:400] if r.status_code != 200 else "OK")
-                except Exception as error:
-                    print(f"{model}: error {error}")
+            print("Testing Cloudflare (free) image generation...")
+
+            try:
+                data = cf_run("a red apple on a table", 512, 512)
+                print(f"generate: OK ({len(data)} bytes)")
+            except Exception as error:
+                print("generate: FAILED", error)
+
+            print("Testing Cloudflare image editing...")
+
+            try:
+                data = cf_run(
+                    "Edit input_image_0: make it blue",
+                    512, 512, tiny_png()
+                )
+                print(f"edit: OK ({len(data)} bytes)")
+            except Exception as error:
+                print("edit: FAILED", error)
 
         elif cmd == "models":
             try:
