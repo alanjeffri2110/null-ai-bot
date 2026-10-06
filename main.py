@@ -31,7 +31,7 @@ POLLINATIONS_API_KEY = "sk_dCykHdjdw1h7g0TdebHk3LY69lSqXEHi"
 CHAT_MODEL = "openai/gpt-oss-120b"
 # Free image generation + editing: Cloudflare Workers AI (free plan, no card).
 # Get these two values from your free Cloudflare account (see the steps I sent).
-CF_ACCOUNT_ID = ""  # leave empty to auto-detect from the token, or paste your Account ID
+CF_ACCOUNT_ID = "f780e6701418d8e47df712adc90832f9"  # your Cloudflare Account ID
 CF_API_TOKEN = "cfut_64r9cEopWLms8QQh6dVpZQyfbKG4eaB6XNKeU2Mwa3725d04"
 CF_MODEL = "@cf/black-forest-labs/flux-2-klein-4b"  # makes AND edits images
 
@@ -115,7 +115,7 @@ BLOCKED_IMAGE_TERMS = [
 # ---------------------------------------------------------------
 # NEW SETTINGS
 # ---------------------------------------------------------------
-VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+VISION_MODEL = "qwen/qwen3.6-27b"  # Groq retired llama-4-scout on 17 Jul 2026
 MAX_HISTORY = 20
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -507,7 +507,12 @@ def vision_answer(history, question, image_bytes):
         messages=messages
     )
 
-    return response.choices[0].message.content
+    answer = response.choices[0].message.content or ""
+
+    # drop any visible "thinking" block the model may include
+    answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
+
+    return answer or "I couldn't read that image."
 
 
 def wants_edit(text):
