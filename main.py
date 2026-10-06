@@ -15,6 +15,7 @@ import requests
 from groq import Groq
 
 from telegram import Update
+from telegram.error import Conflict
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -32,7 +33,7 @@ CHAT_MODEL = "openai/gpt-oss-120b"
 # Free image generation + editing: Cloudflare Workers AI (free plan, no card).
 # Get these two values from your free Cloudflare account (see the steps I sent).
 CF_ACCOUNT_ID = "f780e6701418d8e47df712adc90832f9"  # your Cloudflare Account ID
-CF_API_TOKEN = "cfut_64r9cEopWLms8QQh6dVpZQyfbKG4eaB6XNKeU2Mwa3725d04"
+CF_API_TOKEN = "cfut_ns50l7QBvncTztCw7brbodlndNX51XKtgW23TaZZbc979cd1"
 CF_MODEL = "@cf/black-forest-labs/flux-2-klein-4b"  # makes AND edits images
 
 
@@ -267,6 +268,16 @@ def unsafe_image_prompt(prompt):
             return True
 
     return False
+
+
+DEBUG_ERRORS = True  # shows the real error reason in the chat; set False when everything works
+
+
+def debug_detail(error):
+    if not DEBUG_ERRORS:
+        return ""
+
+    return "\n" + str(error)[:250]
 
 
 def error_code(error):
@@ -701,7 +712,7 @@ async def image(
 
         await update.message.reply_text(
             "❌ Image generation failed. Please try again later."
-            + error_code(error)
+            + error_code(error) + debug_detail(error)
         )
 
 
@@ -762,7 +773,7 @@ async def do_edit(update, context, image_bytes, instruction):
 
         await update.message.reply_text(
             "❌ Image edit failed. Please try again later."
-            + error_code(error)
+            + error_code(error) + debug_detail(error)
         )
 
 
@@ -1306,6 +1317,28 @@ def admin_console():
             print("Unknown command. Type 'help'.")
 
 
+_last_conflict_note = 0
+
+
+async def on_error(update, context):
+    """Short one-line errors instead of long tracebacks."""
+    global _last_conflict_note
+
+    error = context.error
+
+    if isinstance(error, Conflict):
+        if time.time() - _last_conflict_note > 60:
+            _last_conflict_note = time.time()
+            print(
+                "⚠️ Another copy of this bot is running with the same "
+                "Telegram token. Close the other copy (or revoke the "
+                "token in @BotFather)."
+            )
+        return
+
+    print("⚠️ Bot error:", error)
+
+
 def main():
 
     print()
@@ -1324,6 +1357,7 @@ def main():
         .build()
     )
 
+    app.add_error_handler(on_error)
     app.add_handler(MessageHandler(filters.ALL, tracker), group=-1)
 
     app.add_handler(CommandHandler("startnull", start_null))
