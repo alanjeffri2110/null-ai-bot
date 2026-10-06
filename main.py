@@ -25,7 +25,7 @@ from telegram.ext import (
 )
 
 
-TELEGRAM_TOKEN = "8520225669:AAERew_ylB8Mu55MJU2_zX7hNITKPQJeLp4"
+TELEGRAM_TOKEN = "8520225669:AAGedAYfHvGVBQngnXBrgBMkZYB40NEaEWw"
 GROQ_API_KEY = "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"
 POLLINATIONS_API_KEY = "sk_dCykHdjdw1h7g0TdebHk3LY69lSqXEHi"
 
@@ -277,7 +277,7 @@ def debug_detail(error):
     if not DEBUG_ERRORS:
         return ""
 
-    return "\n" + str(error)[:250]
+    return "\n" + str(error)[:250] + f"\n[copy v2, cf …{CF_API_TOKEN[-4:]}]"
 
 
 def error_code(error):
@@ -407,13 +407,41 @@ def cf_run(prompt, width=1024, height=1024, image_bytes=None):
     if image_bytes is not None:
         fields["input_image_0"] = ("image.jpg", image_bytes, "image/jpeg")
 
-    response = requests.post(
+    url = (
         f"https://api.cloudflare.com/client/v4/accounts/{cf_account_id()}"
-        f"/ai/run/{CF_MODEL}",
-        headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
-        files=fields,
-        timeout=180
+        f"/ai/run/{CF_MODEL}"
     )
+
+    response = None
+    last_error = None
+
+    # Cloudflare sometimes answers 401/5xx for a request that works a moment
+    # later, and mobile networks drop connections, so try up to 4 times.
+    for attempt in range(4):
+        try:
+            response = requests.post(
+                url,
+                headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
+                files=fields,
+                timeout=180
+            )
+        except Exception as error:
+            last_error = error
+            response = None
+            time.sleep(2 + attempt * 2)
+            continue
+
+        if response.status_code in (401, 429, 500, 502, 503, 504):
+            last_error = Exception(
+                f"HTTP {response.status_code}: {response.text[:300]}"
+            )
+            time.sleep(2 + attempt * 2)
+            continue
+
+        break
+
+    if response is None or response.status_code in (401, 429, 500, 502, 503, 504):
+        raise last_error
 
     if response.status_code != 200:
         raise Exception(
