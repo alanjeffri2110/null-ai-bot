@@ -25,7 +25,7 @@ from telegram.ext import (
 
 
 TELEGRAM_TOKEN = "8520225669:AAERew_ylB8Mu55MJU2_zX7hNITKPQJeLp4"
-GROQ_API_KEY = "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"
+GROQ_API_KEY = "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"
 POLLINATIONS_API_KEY = "sk_dCykHdjdw1h7g0TdebHk3LY69lSqXEHi"
 
 CHAT_MODEL = "openai/gpt-oss-120b"
