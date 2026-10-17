@@ -25,9 +25,9 @@ from telegram.ext import (
 )
 
 
-TELEGRAM_TOKEN = "8520225669:AAHJb6rCSE7Ief5x2ir7ssmoG0EhQRlBp3k"
+TELEGRAM_TOKEN = "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"
 GROQ_API_KEY = "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"
-POLLINATIONS_API_KEY = "sk_dCykHdjdw1h7g0TdebHk3LY69lSqXEHi"
+POLLINATIONS_API_KEY = "sk_WLt7eD4mfFj59TepmKUC2Y8ZgfRTXANd"
 
 CHAT_MODEL = "openai/gpt-oss-120b"
 # Free image generation + editing: Cloudflare Workers AI (free plan, no card).
